@@ -278,7 +278,17 @@ export default function App() {
         <div className={`flex-1 flex flex-col h-full overflow-hidden border-r border-slate-200 dark:border-slate-700 ${mobileTab === 'menu' ? 'flex' : 'hidden md:flex'}`}>
           <div className="bg-white dark:bg-slate-800 p-4 shadow-sm z-10 transition-colors">
              <div className="flex justify-between items-center mb-4">
-              <h1 className="text-xl font-bold flex items-center gap-2"><UtensilsCrossed className="text-orange-500"/> QuickServe <span className="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded-full border border-green-200">Cloud</span></h1>
+              {/* LOGO & NAME HEADER */}
+              <h1 className="text-xl font-bold flex items-center gap-2">
+                {/* 1. Your Logo Image */}
+                <img src="/logo.png" alt="Shop Logo" className="h-8 w-8 object-contain" />
+                
+                {/* 2. Your Shop Name */}
+                <span>Murugan Kadai</span> 
+                
+                {/* 3. Cloud Badge (Keep this) */}
+                <span className="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded-full border border-green-200">Cloud</span>
+              </h1>
               <div className="flex gap-2">
                  <button onClick={toggleTheme} className="p-2 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors">
                     {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
@@ -486,7 +496,7 @@ export default function App() {
           <div className="fixed inset-0 bg-gray-900/90 z-50 flex flex-col items-center justify-center p-4 backdrop-blur-sm">
             <div id="printable-area" className="bg-white w-full max-w-xs p-6 shadow-2xl text-gray-900 font-mono text-sm">
               <div className="text-center border-b-2 border-dashed border-gray-800 pb-4 mb-4">
-                <h1 className="text-xl font-bold uppercase">QuickServe</h1>
+                <h1 className="text-xl font-bold uppercase">Murugan Kadai</h1>
                 <p className="text-xs text-gray-500">Token</p>
                 <span className="font-bold text-4xl border-2 border-black px-4 py-1 rounded inline-block">#{currentOrderId ? (activeOrders.find(o=>o.id===currentOrderId)?.token || tokenNumber) : tokenNumber}</span>
                 <div className="mt-2 text-left"><span className="text-xs text-gray-500">Cust:</span> <span className="font-bold uppercase">{customerName || 'Guest'}</span></div>
