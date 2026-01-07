@@ -9,7 +9,8 @@ import {
 import { initializeApp } from "firebase/app";
 import { 
   getFirestore, collection, addDoc, updateDoc, deleteDoc, 
-  doc, onSnapshot, query, orderBy, setDoc 
+  doc, onSnapshot, query, orderBy, setDoc, limit, 
+  serverTimestamp, writeBatch, enableIndexedDbPersistence 
 } from "firebase/firestore";
 
 // --- YOUR FREE TIER CONFIGURATION ---
@@ -26,6 +27,15 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+
+// Enable offline persistence for better performance
+enableIndexedDbPersistence(db).catch((err) => {
+  if (err.code === 'failed-precondition') {
+    console.warn('Multiple tabs open, persistence enabled in first tab only');
+  } else if (err.code === 'unimplemented') {
+    console.warn('Browser does not support offline persistence');
+  }
+});
 
 // --- LANGUAGE TRANSLATIONS ---
 const TRANSLATIONS = {
@@ -236,24 +246,21 @@ export default function App() {
     const savedLang = localStorage.getItem('qs_language');
     if (savedLang && ['en', 'ta', 'ml'].includes(savedLang)) setLanguage(savedLang);
 
-    // 2. Menu Listener (Real-time)
+    // 2. Menu Listener (Real-time) - Menu items are typically small, no limit needed
     const unsubscribeMenu = onSnapshot(collection(db, "menu"), (snapshot) => {
       const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setMenuItems(items);
     });
 
-    // 3. Active Orders Listener (Real-time)
-    const qOrders = query(collection(db, "active_orders"), orderBy("timestamp", "desc"));
+    // 3. Active Orders Listener (Real-time) - Limit to 50 recent orders
+    const qOrders = query(
+      collection(db, "active_orders"), 
+      orderBy("timestamp", "desc"),
+      limit(50)
+    );
     const unsubscribeOrders = onSnapshot(qOrders, (snapshot) => {
       const orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setActiveOrders(orders);
-    });
-
-    // 4. Sales History Listener (Real-time)
-    const qHistory = query(collection(db, "sales_history"), orderBy("timestamp", "desc"));
-    const unsubscribeHistory = onSnapshot(qHistory, (snapshot) => {
-      const history = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setSalesHistory(history);
     });
 
     // 5. Token Listener (Global Counter)
@@ -269,10 +276,27 @@ export default function App() {
     return () => {
       unsubscribeMenu();
       unsubscribeOrders();
-      unsubscribeHistory();
       unsubscribeToken();
     };
   }, []);
+
+  // 4. Sales History Listener (Conditional - Only when modal is open)
+  // OPTIMIZATION: Only subscribe when user views history to save reads
+  useEffect(() => {
+    if (!showHistory) return;
+
+    const qHistory = query(
+      collection(db, "sales_history"), 
+      orderBy("timestamp", "desc"),
+      limit(200) // Limit to recent 200 transactions
+    );
+    const unsubscribeHistory = onSnapshot(qHistory, (snapshot) => {
+      const history = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setSalesHistory(history);
+    });
+
+    return () => unsubscribeHistory();
+  }, [showHistory]);
 
   // --- FUNCTIONS ---
 
@@ -287,6 +311,23 @@ export default function App() {
   const switchLanguage = (lang) => {
     setLanguage(lang);
     localStorage.setItem('qs_language', lang);
+  };
+
+  // Helper function to convert any timestamp format to Date
+  const getDateFromTimestamp = (timestamp) => {
+    if (!timestamp) return null;
+    // Firestore Timestamp object
+    if (timestamp?.toDate && typeof timestamp.toDate === 'function') {
+      return timestamp.toDate();
+    }
+    // ISO string or number
+    const date = new Date(timestamp);
+    return isNaN(date.getTime()) ? null : date;
+  };
+
+  const formatTime = (timestamp) => {
+    const date = getDateFromTimestamp(timestamp);
+    return date ? date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) : '--:--';
   };
 
   const startNewOrder = () => {
@@ -354,7 +395,7 @@ export default function App() {
       customer: customerName,
       items: cart,
       total: cart.reduce((sum, i) => sum + (i.price * i.qty), 0),
-      timestamp: new Date().toISOString(),
+      timestamp: serverTimestamp(), // Use server timestamp for consistency
       status: 'held'
     };
 
@@ -405,7 +446,7 @@ export default function App() {
       customer: customerName || 'Guest', 
       items: cart,
       total: cart.reduce((sum, i) => sum + (i.price * i.qty), 0),
-      timestamp: new Date().toISOString(),
+      timestamp: serverTimestamp(), // Use server timestamp
       paymentMode: paymentMode,
     };
 
@@ -426,15 +467,22 @@ export default function App() {
 
   const handleEndDay = async () => {
     if(confirm("⚠️ End Day? This will DELETE all history and RESET token.")) {
-       // Note: Client-side batch deletion for small shops
-       salesHistory.forEach(async (order) => {
-         await deleteDoc(doc(db, "sales_history", order.id));
+       // OPTIMIZED: Use batch writes for efficient deletion
+       const batch = writeBatch(db);
+       
+       // Add all deletions to batch
+       salesHistory.forEach((order) => {
+         batch.delete(doc(db, "sales_history", order.id));
        });
-       activeOrders.forEach(async (order) => {
-          await deleteDoc(doc(db, "active_orders", order.id));
+       activeOrders.forEach((order) => {
+         batch.delete(doc(db, "active_orders", order.id));
        });
+       
        // Reset Token to 101
-       await setDoc(doc(db, "settings", "global"), { token: 101 });
+       batch.set(doc(db, "settings", "global"), { token: 101 });
+       
+       // Commit all operations in a single network request
+       await batch.commit();
        
        startNewOrder();
     }
@@ -570,9 +618,8 @@ export default function App() {
                   <button onClick={(e) => deleteActiveOrder(e, order.id)} className="text-slate-300 hover:text-red-500"><X size={12}/></button>
                 </div>
                 <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 truncate">{order.customer || t('guest')}</div>
-                <div className="flex justify-between items-end mt-2">
+                <div className="mt-2">
                    <span className="text-xs font-bold bg-slate-100 dark:bg-slate-700 dark:text-slate-300 px-1.5 rounded">₹{order.total}</span>
-                   <span className="text-[10px] text-slate-400 flex items-center gap-0.5"><Clock size={10}/> {new Date(order.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
                 </div>
               </div>
             ))}
@@ -656,7 +703,11 @@ export default function App() {
             });
           } else {
             // Default: sort by time (newest first)
-            filteredHistory = [...filteredHistory].sort((a, b) => b.timestamp - a.timestamp);
+            filteredHistory = [...filteredHistory].sort((a, b) => {
+              const timeA = getDateFromTimestamp(a.timestamp) || new Date(0);
+              const timeB = getDateFromTimestamp(b.timestamp) || new Date(0);
+              return timeB - timeA;
+            });
           }
           
           const cashTotal = salesHistory.filter(o => (o.paymentMode || 'Cash') === 'Cash').reduce((a,b)=>a+b.total,0);
@@ -779,7 +830,6 @@ export default function App() {
                         <tr>
                           <th className="p-3">#</th>
                           <th className="p-3">{t('customer')}</th>
-                          <th className="p-3">{t('time')}</th>
                           <th className="p-3">{t('payment')}</th>
                           <th className="p-3 text-right">{t('amount')}</th>
                         </tr>
@@ -789,7 +839,6 @@ export default function App() {
                           <tr key={o.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50">
                             <td className="p-3 font-bold">#{o.token}</td>
                             <td className="p-3 text-gray-600 dark:text-gray-400">{o.customer || 'Guest'}</td>
-                            <td className="p-3 text-gray-500 dark:text-gray-400">{new Date(o.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td>
                             <td className="p-3">
                               <span className={`text-xs px-2 py-1 rounded-full font-medium ${
                                 (o.paymentMode || 'Cash') === 'Cash' 
