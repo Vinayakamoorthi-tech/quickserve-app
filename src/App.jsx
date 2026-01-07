@@ -56,6 +56,13 @@ const TRANSLATIONS = {
     actions: 'Actions',
     dailyRegister: 'Daily Register',
     totalRevenue: 'Total Revenue',
+    cashTotal: 'Cash Total',
+    upiTotal: 'UPI Total',
+    cardTotal: 'Card Total',
+    allPayments: 'All Payments',
+    sortBy: 'Sort By',
+    sortByTime: 'Time',
+    sortByName: 'Name',
     endDay: 'End Day',
     time: 'Time',
     payment: 'Payment',
@@ -100,6 +107,13 @@ const TRANSLATIONS = {
     actions: 'செயல்கள்',
     dailyRegister: 'தினசரி பதிவு',
     totalRevenue: 'மொத்த வருவாய்',
+    cashTotal: 'பண மொத்தம்',
+    upiTotal: 'யூபிஐ மொத்தம்',
+    cardTotal: 'கார்டு மொத்தம்',
+    allPayments: 'அனைத்து பணம்',
+    sortBy: 'வரிசைப்படுத்து',
+    sortByTime: 'நேரம்',
+    sortByName: 'பெயர்',
     endDay: 'நாள் முடி',
     time: 'நேரம்',
     payment: 'பணம்',
@@ -144,6 +158,13 @@ const TRANSLATIONS = {
     actions: 'പ്രവർത്തനങ്ങൾ',
     dailyRegister: 'ദൈനംദിന രജിസ്റ്റർ',
     totalRevenue: 'മൊത്തം വരുമാനം',
+    cashTotal: 'പണം മൊത്തം',
+    upiTotal: 'യുപിഐ മൊത്തം',
+    cardTotal: 'കാർഡ് മൊത്തം',
+    allPayments: 'എല്ലാ പേയ്‌മെന്റുകൾ',
+    sortBy: 'അടുക്കുക',
+    sortByTime: 'സമയം',
+    sortByName: 'പേര്',
     endDay: 'ദിവസം അവസാനിപ്പിക്കുക',
     time: 'സമയം',
     payment: 'പണം',
@@ -202,6 +223,8 @@ export default function App() {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [showReceipt, setShowReceipt] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [paymentFilter, setPaymentFilter] = useState('all'); // all, Cash, Card, UPI
+  const [sortMethod, setSortMethod] = useState('time'); // time, name
 
   // --- FIREBASE LISTENERS (The "Sync" Magic) ---
   useEffect(() => {
@@ -619,36 +642,191 @@ export default function App() {
         )}
 
         {/* 2. HISTORY */}
-        {showHistory && (
-          <div className="fixed inset-0 bg-gray-900/50 dark:bg-black/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-            <div className="bg-white dark:bg-slate-800 w-full max-w-3xl rounded-lg shadow-2xl flex flex-col max-h-[80vh]">
-              <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-gray-50 dark:bg-slate-800 rounded-t-lg">
-                <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('dailyRegister')}</h2>
-                <button onClick={() => setShowHistory(false)} className="text-slate-500 hover:text-slate-800 dark:hover:text-white"><X size={24}/></button>
-              </div>
-              <div className="p-4 flex justify-between items-center bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-                 <div><div className="text-sm text-gray-500 dark:text-gray-400">{t('totalRevenue')}</div><div className="text-2xl font-bold text-green-600 dark:text-green-400">₹{salesHistory.reduce((a,b)=>a+b.total,0).toLocaleString()}</div></div>
-                 <button onClick={handleEndDay} className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-3 py-2 rounded font-bold text-sm flex items-center gap-1 hover:bg-red-100 dark:hover:bg-red-900/30"><Trash2 size={16}/> {t('endDay')}</button>
-              </div>
-              <div className="flex-1 overflow-y-auto p-0">
-                 <table className="w-full text-sm text-left text-slate-700 dark:text-slate-300">
-                   <thead className="bg-gray-50 dark:bg-slate-700 sticky top-0 shadow-sm"><tr><th className="p-3">#</th><th className="p-3">{t('customer')}</th><th className="p-3">{t('time')}</th><th className="p-3">{t('payment')}</th><th className="p-3 text-right">{t('amount')}</th></tr></thead>
-                   <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-                     {salesHistory.map(o => (
-                       <tr key={o.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50">
-                         <td className="p-3 font-bold">#{o.token}</td>
-                         <td className="p-3 text-gray-600 dark:text-gray-400">{o.customer || 'Guest'}</td>
-                         <td className="p-3 text-gray-500 dark:text-gray-400">{new Date(o.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td>
-                         <td className="p-3"><span className="text-xs px-2 py-1 rounded-full font-medium {o.paymentMode === 'Cash' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : o.paymentMode === 'Card' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'}">{o.paymentMode || 'Cash'}</span></td>
-                         <td className="p-3 text-right font-bold text-green-700 dark:text-green-400">₹{o.total}</td>
-                       </tr>
-                     ))}
-                   </tbody>
-                 </table>
+        {showHistory && (() => {
+          let filteredHistory = paymentFilter === 'all' 
+            ? salesHistory 
+            : salesHistory.filter(o => (o.paymentMode || 'Cash') === paymentFilter);
+          
+          // Apply sorting
+          if (sortMethod === 'name') {
+            filteredHistory = [...filteredHistory].sort((a, b) => {
+              const nameA = (a.customer || 'Guest').toLowerCase();
+              const nameB = (b.customer || 'Guest').toLowerCase();
+              return nameA.localeCompare(nameB);
+            });
+          } else {
+            // Default: sort by time (newest first)
+            filteredHistory = [...filteredHistory].sort((a, b) => b.timestamp - a.timestamp);
+          }
+          
+          const cashTotal = salesHistory.filter(o => (o.paymentMode || 'Cash') === 'Cash').reduce((a,b)=>a+b.total,0);
+          const cardTotal = salesHistory.filter(o => (o.paymentMode || 'Cash') === 'Card').reduce((a,b)=>a+b.total,0);
+          const upiTotal = salesHistory.filter(o => (o.paymentMode || 'Cash') === 'UPI').reduce((a,b)=>a+b.total,0);
+          const totalRevenue = salesHistory.reduce((a,b)=>a+b.total,0);
+          
+          return (
+            <div className="fixed inset-0 bg-gray-900/50 dark:bg-black/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white dark:bg-slate-800 w-full max-w-4xl rounded-lg shadow-2xl flex flex-col max-h-[85vh]">
+                <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-gray-50 dark:bg-slate-800 rounded-t-lg">
+                  <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('dailyRegister')}</h2>
+                  <button onClick={() => { setShowHistory(false); setPaymentFilter('all'); setSortMethod('time'); }} className="text-slate-500 hover:text-slate-800 dark:hover:text-white"><X size={24}/></button>
+                </div>
+                
+                {/* Payment Filter Buttons */}
+                <div className="p-4 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+                  <div className="mb-3">
+                    <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2 block">FILTER BY PAYMENT</label>
+                    <div className="flex flex-wrap gap-2">
+                    <button 
+                      onClick={() => setPaymentFilter('all')} 
+                      className={`px-4 py-2 rounded-lg font-bold text-sm transition-all ${
+                        paymentFilter === 'all' 
+                          ? 'bg-slate-700 dark:bg-slate-600 text-white' 
+                          : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                      }`}>
+                      {t('allPayments')}
+                    </button>
+                    <button 
+                      onClick={() => setPaymentFilter('Cash')} 
+                      className={`px-4 py-2 rounded-lg font-bold text-sm transition-all ${
+                        paymentFilter === 'Cash' 
+                          ? 'bg-green-600 text-white' 
+                          : 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50'
+                      }`}>
+                      {t('cash')}
+                    </button>
+                    <button 
+                      onClick={() => setPaymentFilter('Card')} 
+                      className={`px-4 py-2 rounded-lg font-bold text-sm transition-all ${
+                        paymentFilter === 'Card' 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 hover:bg-blue-200 dark:hover:bg-blue-900/50'
+                      }`}>
+                      {t('card')}
+                    </button>
+                    <button 
+                      onClick={() => setPaymentFilter('UPI')} 
+                      className={`px-4 py-2 rounded-lg font-bold text-sm transition-all ${
+                        paymentFilter === 'UPI' 
+                          ? 'bg-purple-600 text-white' 
+                          : 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 hover:bg-purple-200 dark:hover:bg-purple-900/50'
+                      }`}>
+                      {t('upi')}
+                    </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2 block">{t('sortBy').toUpperCase()}</label>
+                    <div className="flex flex-wrap gap-2">
+                      <button 
+                        onClick={() => setSortMethod('time')} 
+                        className={`px-4 py-2 rounded-lg font-bold text-sm transition-all flex items-center gap-1 ${
+                          sortMethod === 'time' 
+                            ? 'bg-orange-600 text-white' 
+                            : 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 hover:bg-orange-200 dark:hover:bg-orange-900/50'
+                        }`}>
+                        <Clock size={16} />
+                        {t('sortByTime')}
+                      </button>
+                      <button 
+                        onClick={() => setSortMethod('name')} 
+                        className={`px-4 py-2 rounded-lg font-bold text-sm transition-all flex items-center gap-1 ${
+                          sortMethod === 'name' 
+                            ? 'bg-orange-600 text-white' 
+                            : 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 hover:bg-orange-200 dark:hover:bg-orange-900/50'
+                        }`}>
+                        <List size={16} />
+                        {t('sortByName')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                
+                {/* Totals Summary */}
+                <div className="p-4 bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-900 border-b border-slate-200 dark:border-slate-700">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm">
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">{t('totalRevenue')}</div>
+                      <div className="text-xl font-bold text-slate-700 dark:text-slate-200">₹{totalRevenue.toLocaleString()}</div>
+                    </div>
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm">
+                      <div className="text-xs text-green-600 dark:text-green-400 mb-1">{t('cashTotal')}</div>
+                      <div className="text-xl font-bold text-green-600 dark:text-green-400">₹{cashTotal.toLocaleString()}</div>
+                    </div>
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm">
+                      <div className="text-xs text-blue-600 dark:text-blue-400 mb-1">{t('cardTotal')}</div>
+                      <div className="text-xl font-bold text-blue-600 dark:text-blue-400">₹{cardTotal.toLocaleString()}</div>
+                    </div>
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm">
+                      <div className="text-xs text-purple-600 dark:text-purple-400 mb-1">{t('upiTotal')}</div>
+                      <div className="text-xl font-bold text-purple-600 dark:text-purple-400">₹{upiTotal.toLocaleString()}</div>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex justify-end">
+                    <button onClick={handleEndDay} className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-3 py-2 rounded font-bold text-sm flex items-center gap-1 hover:bg-red-100 dark:hover:bg-red-900/30"><Trash2 size={16}/> {t('endDay')}</button>
+                  </div>
+                </div>
+                
+                {/* Transactions Table */}
+                <div className="flex-1 overflow-y-auto p-0">
+                  {filteredHistory.length === 0 ? (
+                    <div className="p-8 text-center text-gray-500 dark:text-gray-400">
+                      No transactions for selected payment mode
+                    </div>
+                  ) : (
+                    <table className="w-full text-sm text-left text-slate-700 dark:text-slate-300">
+                      <thead className="bg-gray-50 dark:bg-slate-700 sticky top-0 shadow-sm">
+                        <tr>
+                          <th className="p-3">#</th>
+                          <th className="p-3">{t('customer')}</th>
+                          <th className="p-3">{t('time')}</th>
+                          <th className="p-3">{t('payment')}</th>
+                          <th className="p-3 text-right">{t('amount')}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                        {filteredHistory.map(o => (
+                          <tr key={o.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50">
+                            <td className="p-3 font-bold">#{o.token}</td>
+                            <td className="p-3 text-gray-600 dark:text-gray-400">{o.customer || 'Guest'}</td>
+                            <td className="p-3 text-gray-500 dark:text-gray-400">{new Date(o.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td>
+                            <td className="p-3">
+                              <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                                (o.paymentMode || 'Cash') === 'Cash' 
+                                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' 
+                                  : (o.paymentMode || 'Cash') === 'Card' 
+                                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' 
+                                  : 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                              }`}>
+                                {o.paymentMode || 'Cash'}
+                              </span>
+                            </td>
+                            <td className="p-3 text-right font-bold text-green-700 dark:text-green-400">₹{o.total}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+                
+                {/* Summary Footer */}
+                {filteredHistory.length > 0 && (
+                  <div className="p-4 bg-slate-50 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-600 dark:text-gray-400">
+                        {filteredHistory.length} transaction{filteredHistory.length !== 1 ? 's' : ''}
+                      </span>
+                      <span className="text-lg font-bold text-slate-700 dark:text-slate-200">
+                        Subtotal: ₹{filteredHistory.reduce((a,b)=>a+b.total,0).toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
+        
 
         {/* 3. RECEIPT */}
         {showReceipt && (
