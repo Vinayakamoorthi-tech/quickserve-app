@@ -8,33 +8,30 @@ import {
 // --- FIREBASE IMPORTS ---
 import { initializeApp } from "firebase/app";
 import { 
-  getFirestore, collection, addDoc, updateDoc, deleteDoc, 
+  collection, addDoc, updateDoc, deleteDoc, 
   doc, onSnapshot, query, orderBy, setDoc, limit, 
-  serverTimestamp, writeBatch, enableIndexedDbPersistence 
+  serverTimestamp, writeBatch, runTransaction, getDocs,
+  initializeFirestore, persistentLocalCache, persistentMultipleTabManager
 } from "firebase/firestore";
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "firebase/auth";
 
-// --- YOUR FREE TIER CONFIGURATION ---
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyC9XHBNOftotgL4bZLkCSFjK_MTKQXO0xs",
-  authDomain: "quickserve-d486a.firebaseapp.com",
-  projectId: "quickserve-d486a",
-  storageBucket: "quickserve-d486a.firebasestorage.app",
-  messagingSenderId: "1045900551202",
-  appId: "1:1045900551202:web:ce45df2e26036b2b82967b",
-  measurementId: "G-90JBCQ8452"
+  apiKey: "AIzaSyBQPZO11OmcIj_bpXsKzx8txS8emgT2l_g",
+  authDomain: "quickserve-2e53a.firebaseapp.com",
+  projectId: "quickserve-2e53a",
+  storageBucket: "quickserve-2e53a.firebasestorage.app",
+  messagingSenderId: "465734957896",
+  appId: "1:465734957896:web:3df7339ad15cbf4889517d",
+  measurementId: "G-CRCEPEXDYN"
 };
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-
-// Enable offline persistence for better performance
-enableIndexedDbPersistence(db).catch((err) => {
-  if (err.code === 'failed-precondition') {
-    console.warn('Multiple tabs open, persistence enabled in first tab only');
-  } else if (err.code === 'unimplemented') {
-    console.warn('Browser does not support offline persistence');
-  }
+const auth = getAuth(app);
+// Offline cache that works across multiple tabs
+const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
 });
 
 // --- LANGUAGE TRANSLATIONS ---
@@ -204,13 +201,23 @@ const DEFAULT_CATEGORIES = [
 
 export default function App() {
   // --- STATE ---
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('qs_theme') === 'dark');
   const [mobileTab, setMobileTab] = useState('menu');
-  const [language, setLanguage] = useState('en');
+  const [language, setLanguage] = useState(() => {
+    const saved = localStorage.getItem('qs_language');
+    return ['en', 'ta', 'ml'].includes(saved) ? saved : 'en';
+  });
+
+  // Auth State
+  const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [signingIn, setSigningIn] = useState(false);
+  const [busy, setBusy] = useState(false); // blocks double-taps while saving
 
   // Data State (Synced with Firebase)
   const [menuItems, setMenuItems] = useState([]);
-  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  const [categories] = useState(DEFAULT_CATEGORIES);
   const [activeOrders, setActiveOrders] = useState([]); 
   const [salesHistory, setSalesHistory] = useState([]);
   const [tokenNumber, setTokenNumber] = useState(101); // Global Token
@@ -237,19 +244,28 @@ export default function App() {
   const [sortMethod, setSortMethod] = useState('time'); // time, name
 
   // --- FIREBASE LISTENERS (The "Sync" Magic) ---
+  // Watch login state
   useEffect(() => {
-    // 1. Theme Listener (Local Preference)
-    const savedTheme = localStorage.getItem('qs_theme');
-    if (savedTheme === 'dark') setIsDarkMode(true);
-    
-    // Load saved language
-    const savedLang = localStorage.getItem('qs_language');
-    if (savedLang && ['en', 'ta', 'ml'].includes(savedLang)) setLanguage(savedLang);
+    return onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthReady(true);
+    });
+  }, []);
+
+  // Firestore listeners only start AFTER login
+  useEffect(() => {
+    if (!user) return;
 
     // 2. Menu Listener (Real-time) - Menu items are typically small, no limit needed
     const unsubscribeMenu = onSnapshot(collection(db, "menu"), (snapshot) => {
       const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setMenuItems(items);
+    }, (err) => {
+      // Signed in with Google but this email is not on the staff list
+      if (err.code === 'permission-denied') {
+        setAuthError('This Google account is not allowed. Ask the owner to add your email.');
+        signOut(auth);
+      }
     });
 
     // 3. Active Orders Listener (Real-time) - Limit to 50 recent orders
@@ -278,12 +294,12 @@ export default function App() {
       unsubscribeOrders();
       unsubscribeToken();
     };
-  }, []);
+  }, [user]);
 
   // 4. Sales History Listener (Conditional - Only when modal is open)
   // OPTIMIZATION: Only subscribe when user views history to save reads
   useEffect(() => {
-    if (!showHistory) return;
+    if (!showHistory || !user) return;
 
     const qHistory = query(
       collection(db, "sales_history"), 
@@ -296,9 +312,38 @@ export default function App() {
     });
 
     return () => unsubscribeHistory();
-  }, [showHistory]);
+  }, [showHistory, user]);
 
   // --- FUNCTIONS ---
+
+  const handleGoogleLogin = async () => {
+    setAuthError('');
+    setSigningIn(true);
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch (err) {
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+        // user closed the window, no message needed
+      } else if (err.code === 'auth/network-request-failed') {
+        setAuthError('No internet connection');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setAuthError('This website address is not authorised in Firebase');
+      } else {
+        setAuthError('Google sign-in failed. Try again.');
+      }
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  // Safely hand out the next token (no duplicates even if 2 devices bill together)
+  const allocateToken = () => runTransaction(db, async (tx) => {
+    const ref = doc(db, "settings", "global");
+    const snap = await tx.get(ref);
+    const current = snap.exists() ? snap.data().token : 101;
+    tx.set(ref, { token: current + 1 });
+    return current;
+  });
 
   const toggleTheme = () => {
     const newMode = !isDarkMode;
@@ -359,19 +404,25 @@ export default function App() {
 
   const handleSaveItem = async (e) => {
     e.preventDefault();
-    if (!newItemName || !newItemPrice) return;
-    const itemData = {
-      name: newItemName,
-      price: parseFloat(newItemPrice),
-      category: newItemCategory
-    };
-    
-    if (editingItem) {
-      await updateDoc(doc(db, "menu", editingItem.id), itemData);
-    } else {
-      await addDoc(collection(db, "menu"), itemData);
+    const name = newItemName.trim();
+    const price = parseFloat(newItemPrice);
+    if (!name || !Number.isFinite(price) || price <= 0) {
+      alert('Enter a valid item name and a price greater than 0');
+      return;
     }
-    setEditingItem(null); setNewItemName(''); setNewItemPrice('');
+    const itemData = { name, price, category: newItemCategory };
+
+    try {
+      if (editingItem) {
+        await updateDoc(doc(db, "menu", editingItem.id), itemData);
+      } else {
+        await addDoc(collection(db, "menu"), itemData);
+      }
+      setEditingItem(null); setNewItemName(''); setNewItemPrice('');
+    } catch (err) {
+      console.error(err);
+      alert('Could not save the item. Check your internet and try again.');
+    }
   };
 
   const handleDeleteItem = async (id) => {
@@ -385,31 +436,34 @@ export default function App() {
   };
 
   const saveCurrentOrder = async (shouldCreateNew = true) => {
-    if (cart.length === 0 && !customerName) return; 
+    if (busy || (cart.length === 0 && !customerName)) return;
+    setBusy(true);
+    try {
+      const existingToken = currentOrderId ? activeOrders.find(o => o.id === currentOrderId)?.token : null;
+      const activeToken = existingToken || await allocateToken();
 
-    // Use existing token if editing, or Global Token if new
-    const activeToken = currentOrderId ? (activeOrders.find(o=>o.id === currentOrderId)?.token || tokenNumber) : tokenNumber;
+      const orderData = {
+        token: activeToken,
+        customer: customerName,
+        items: cart,
+        total: cart.reduce((sum, i) => sum + (i.price * i.qty), 0),
+        timestamp: serverTimestamp(),
+        status: 'held'
+      };
 
-    const orderData = {
-      token: activeToken,
-      customer: customerName,
-      items: cart,
-      total: cart.reduce((sum, i) => sum + (i.price * i.qty), 0),
-      timestamp: serverTimestamp(), // Use server timestamp for consistency
-      status: 'held'
-    };
+      if (currentOrderId) {
+        await setDoc(doc(db, "active_orders", currentOrderId), orderData);
+      } else {
+        await addDoc(collection(db, "active_orders"), orderData);
+      }
 
-    if (currentOrderId) {
-      // Update existing held order
-      await setDoc(doc(db, "active_orders", currentOrderId), orderData);
-    } else {
-      // Create NEW held order
-      await addDoc(collection(db, "active_orders"), orderData);
-      // Increment Global Token only for NEW orders
-      await updateDoc(doc(db, "settings", "global"), { token: tokenNumber + 1 });
+      if (shouldCreateNew) startNewOrder();
+    } catch (err) {
+      console.error(err);
+      alert('Could not save the order. Check your internet and try again.');
+    } finally {
+      setBusy(false);
     }
-
-    if (shouldCreateNew) startNewOrder();
   };
 
   const switchOrder = (orderId) => {
@@ -437,59 +491,124 @@ export default function App() {
   };
 
   const confirmPrintAndClose = async () => {
+    if (busy) return;
+    setBusy(true);
+    // Print first so the receipt shows the token that is on screen
     window.print();
+    try {
+      const existingToken = currentOrderId ? activeOrders.find(o => o.id === currentOrderId)?.token : null;
+      const activeToken = existingToken || await allocateToken();
 
-    const activeToken = currentOrderId ? (activeOrders.find(o=>o.id === currentOrderId)?.token || tokenNumber) : tokenNumber;
+      const finalOrder = {
+        token: activeToken,
+        customer: customerName || 'Guest',
+        items: cart,
+        total: cart.reduce((sum, i) => sum + (i.price * i.qty), 0),
+        timestamp: serverTimestamp(),
+        paymentMode: paymentMode,
+      };
 
-    const finalOrder = {
-      token: activeToken,
-      customer: customerName || 'Guest', 
-      items: cart,
-      total: cart.reduce((sum, i) => sum + (i.price * i.qty), 0),
-      timestamp: serverTimestamp(), // Use server timestamp
-      paymentMode: paymentMode,
-    };
+      await addDoc(collection(db, "sales_history"), finalOrder);
 
-    // 1. Save to Sales History
-    await addDoc(collection(db, "sales_history"), finalOrder);
+      if (currentOrderId) {
+        await deleteDoc(doc(db, "active_orders", currentOrderId));
+      }
 
-    // 2. Cleanup Active Order or Increment Token
-    if (currentOrderId) {
-      await deleteDoc(doc(db, "active_orders", currentOrderId));
-    } else {
-      // Direct checkout means we used a token, so increment the global counter
-      await updateDoc(doc(db, "settings", "global"), { token: tokenNumber + 1 });
+      startNewOrder();
+      setShowReceipt(false);
+    } catch (err) {
+      console.error(err);
+      alert('Bill printed but NOT saved. Check your internet and press Print again.');
+    } finally {
+      setBusy(false);
     }
-    
-    startNewOrder();
-    setShowReceipt(false);
+  };
+
+  // Saves all sales to a spreadsheet file (opens in Excel) before they are deleted
+  const downloadSalesCsv = (rows) => {
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const header = ['Token', 'Customer', 'Payment', 'Total', 'Time', 'Items'];
+    const lines = rows.map(o => [
+      o.token,
+      o.customer,
+      o.paymentMode || 'Cash',
+      o.total,
+      getDateFromTimestamp(o.timestamp)?.toLocaleString() || '',
+      (o.items || []).map(i => `${i.name} x${i.qty}`).join('; ')
+    ].map(esc).join(','));
+    const csv = '\ufeff' + [header.map(esc).join(','), ...lines].join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sales-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleEndDay = async () => {
-    if(confirm("⚠️ End Day? This will DELETE all history and RESET token.")) {
-       // OPTIMIZED: Use batch writes for efficient deletion
-       const batch = writeBatch(db);
-       
-       // Add all deletions to batch
-       salesHistory.forEach((order) => {
-         batch.delete(doc(db, "sales_history", order.id));
-       });
-       activeOrders.forEach((order) => {
-         batch.delete(doc(db, "active_orders", order.id));
-       });
-       
-       // Reset Token to 101
-       batch.set(doc(db, "settings", "global"), { token: 101 });
-       
-       // Commit all operations in a single network request
-       await batch.commit();
-       
-       startNewOrder();
+    if (busy) return;
+    if (!confirm("End Day?\n\nA sales file will be downloaded first.\nThen ALL sales and held orders are deleted and the token resets to 101.")) return;
+    setBusy(true);
+    try {
+      // Read EVERYTHING from the database, not just what is on screen
+      const [salesSnap, ordersSnap] = await Promise.all([
+        getDocs(collection(db, "sales_history")),
+        getDocs(collection(db, "active_orders"))
+      ]);
+
+      if (salesSnap.size > 0) {
+        downloadSalesCsv(salesSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      }
+
+      // A batch holds max 500 operations, so delete in chunks
+      const refs = [...salesSnap.docs, ...ordersSnap.docs].map(d => d.ref);
+      for (let i = 0; i < refs.length; i += 400) {
+        const batch = writeBatch(db);
+        refs.slice(i, i + 400).forEach(r => batch.delete(r));
+        await batch.commit();
+      }
+
+      await setDoc(doc(db, "settings", "global"), { token: 101 });
+      startNewOrder();
+    } catch (err) {
+      console.error(err);
+      alert('End Day failed. Nothing more was deleted. Check your internet and try again.');
+    } finally {
+      setBusy(false);
     }
   };
 
   const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
   const cartCount = cart.reduce((sum, item) => sum + item.qty, 0);
+
+  // --- LOGIN GATE ---
+  if (!authReady) {
+    return <div className="h-screen flex flex-col items-center justify-center gap-3 text-slate-500"><img src="/logo.png" alt="" className="h-16 w-16 object-contain" />Loading...</div>;
+  }
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-lg w-full max-w-sm space-y-4">
+          <div className="flex flex-col items-center gap-2 mb-2">
+            <img src="/logo.png" alt="Logo" className="h-24 w-24 object-contain" />
+            <h1 className="text-2xl font-bold text-slate-800">{t('shopName')}</h1>
+            <p className="text-sm text-slate-500">Staff login</p>
+          </div>
+          {authError && <p className="text-red-600 text-sm text-center">{authError}</p>}
+          <button onClick={handleGoogleLogin} disabled={signingIn}
+            className="w-full flex items-center justify-center gap-3 border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold py-2.5 rounded-lg disabled:opacity-60">
+            <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+              <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.1C12.4 13.6 17.7 9.5 24 9.5z"/>
+              <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4.1 7.1-10.1 7.1-17.5z"/>
+              <path fill="#FBBC05" d="M10.5 28.7c-.5-1.5-.8-3-.8-4.7s.3-3.2.8-4.7l-7.9-6.1C.9 16.4 0 20.1 0 24s.9 7.6 2.6 10.8l7.9-6.1z"/>
+              <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.8 2.3-8.4 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.1C6.5 42.6 14.6 48 24 48z"/>
+            </svg>
+            {signingIn ? 'Signing in...' : 'Sign in with Google'}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // --- RENDER ---
   return (
@@ -512,6 +631,7 @@ export default function App() {
                 <span className="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded-full border border-green-200">{t('cloud')}</span>
               </h1>
               <div className="flex gap-2">
+                 <button onClick={() => signOut(auth)} className="px-2 py-1 text-xs font-bold rounded bg-slate-200 dark:bg-slate-700">Logout</button>
                  {/* Language Selector */}
                  <div className="flex gap-1 bg-slate-100 dark:bg-slate-700 rounded p-1">
                    <button onClick={() => switchLanguage('en')} className={`px-2 py-1 text-xs font-bold rounded transition-colors ${language === 'en' ? 'bg-orange-500 text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}>EN</button>
@@ -588,7 +708,7 @@ export default function App() {
               <span className="text-xl font-bold">₹{cartTotal.toFixed(0)}</span>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <button onClick={() => saveCurrentOrder(true)} className="bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-bold py-3 rounded-lg flex items-center justify-center gap-1 hover:bg-blue-100 dark:hover:bg-blue-900/50 text-sm transition-colors">
+              <button onClick={() => saveCurrentOrder(true)} disabled={busy} className="disabled:opacity-50 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-bold py-3 rounded-lg flex items-center justify-center gap-1 hover:bg-blue-100 dark:hover:bg-blue-900/50 text-sm transition-colors">
                 <Save size={16}/> {t('save')}
               </button>
               <button onClick={() => cart.length > 0 && setShowReceipt(true)} disabled={cart.length===0} className="bg-green-600 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-1 hover:bg-green-500 disabled:opacity-50 text-sm">
@@ -620,6 +740,7 @@ export default function App() {
                 <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 truncate">{order.customer || t('guest')}</div>
                 <div className="mt-2">
                    <span className="text-xs font-bold bg-slate-100 dark:bg-slate-700 dark:text-slate-300 px-1.5 rounded">₹{order.total}</span>
+                   <span className="text-[10px] text-slate-400 ml-2">{formatTime(order.timestamp)}</span>
                 </div>
               </div>
             ))}
@@ -814,7 +935,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="mt-3 flex justify-end">
-                    <button onClick={handleEndDay} className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-3 py-2 rounded font-bold text-sm flex items-center gap-1 hover:bg-red-100 dark:hover:bg-red-900/30"><Trash2 size={16}/> {t('endDay')}</button>
+                    <button onClick={handleEndDay} disabled={busy} className="disabled:opacity-50 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-3 py-2 rounded font-bold text-sm flex items-center gap-1 hover:bg-red-100 dark:hover:bg-red-900/30"><Trash2 size={16}/> {t('endDay')}</button>
                   </div>
                 </div>
                 
@@ -903,7 +1024,7 @@ export default function App() {
             </div>
             <div className="mt-4 flex gap-4 print:hidden">
               <button onClick={() => setShowReceipt(false)} className="px-6 py-3 rounded-lg bg-gray-600 text-white font-bold hover:bg-gray-500">{t('back')}</button>
-              <button onClick={confirmPrintAndClose} className="px-6 py-3 rounded-lg bg-green-600 text-white font-bold flex items-center gap-2 hover:bg-green-500"><Printer size={20} /> {t('print')}</button>
+              <button onClick={confirmPrintAndClose} disabled={busy} className="disabled:opacity-50 px-6 py-3 rounded-lg bg-green-600 text-white font-bold flex items-center gap-2 hover:bg-green-500"><Printer size={20} /> {t('print')}</button>
             </div>
             <style>{`@media print { body * { visibility: hidden; } #printable-area, #printable-area * { visibility: visible; } #printable-area { position: absolute; left: 0; top: 0; width: 100%; } .print\\:hidden { display: none !important; } }`}</style>
           </div>
